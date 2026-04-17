@@ -34,13 +34,22 @@ For open-ended greenfield design, a well-prompted single Claude Opus call is oft
 
 Full citations and reasoning: [RESEARCH.md](./RESEARCH.md).
 
+**Want to see it on your own code?** The repo ships with a [side-by-side benchmark harness](./benchmark) — clones your project into two worktrees, runs single-agent opencode in one and OpenRing in the other, scores both against your test suite. Not a scientific benchmark, but enough to feel the difference on *your* problem:
+
+```bash
+./benchmark/benchmark.sh --demo                       # toy Python bug; 2 min
+./benchmark/benchmark.sh --repo ~/my-project \
+  --task "Find and fix the race in src/queue" \
+  --cycles 20
+```
+
 ---
 
 ## The four things that make it work
 
 1. **🧠 Architect** — `anthropic/claude-sonnet-4-5` by default. Picks the next goal from `AGENTS.md` (or the `WHITEBOARD.md` instruction if non-empty), implements, commits.
 2. **🛡️ Adversary** — `github-copilot/gpt-5` by default, a *different model family*. System-prompted to require a concrete reproducer: a failing test or explicit "no flaws found, verified by X" log. Manufactured nits are a constitution violation.
-3. **⚙️ Grinder** — `google/gemini-2.5-pro` by default. Runs build/tests/lint, fixes red with smallest-diff commits. No architectural changes.
+3. **⚙️ Grinder** — `google/gemini-2.5-pro` by default. Runs build/tests/lint, fixes red with smallest-diff commits. No architectural changes. **Optional** — set `GRINDER_MODEL=""` to run the simpler two-role loop (Architect + Adversary) when you only have one or two plans.
 4. **🔧 Ollama hot-swap** — when a plan model rate-limits or errors, the same prompt re-runs through your local Ollama model so the cycle isn't wasted. Optional 4-way rotation lets Ollama do free mechanical work every 4th cycle.
 
 Plus two operational pieces:
@@ -120,8 +129,8 @@ OLLAMA_IN_ROTATION=0                       # 1 = Ollama is every 4th role
 
 # Loop behavior
 MAX_CYCLES=15
-CHAOS_RATE=20                              # % chance of forced Adversary
-STALL_LIMIT=3                              # no-progress cycles → circuit breaker
+CHAOS_RATE=15                              # % chance of forced Adversary on top of round-robin
+STALL_LIMIT=2                              # no-progress cycles → circuit breaker
 COOLDOWN=5                                 # seconds between cycles
 
 # Optional remote
@@ -135,6 +144,17 @@ Model IDs shift as vendors ship new versions. Run `opencode models` to see what 
 ## 🔒 The Constitution
 
 `AGENTS.md` has a Constitution section — project invariants every agent reads every cycle. Put your non-negotiables here (language choice, public API shape, dependency policy) so long-running loops don't hallucinate them away on cycle 47. The default template ships with sensible project-agnostic rules (no secrets, no ToS evasion, smallest-diff, Adversary-must-be-honest); add your project-specific rules below them.
+
+## 🎯 Getting the behavior the research predicts
+
+The research is clear that multi-agent architectures only win under specific conditions. OpenRing is designed to hit them — but configuration matters:
+
+1. **Use different model families for Architect and Adversary.** [Models prefer outputs from their own training family](https://arxiv.org/html/2506.09443v1); same-family critique rubber-stamps. If you only have one plan, the cheapest honest fix is `ADVERSARY_MODEL="ollama/qwen2.5-coder"` — a local model from a different distribution still breaks the own-family preference. OpenRing prints a loud warning at startup if both roles share a provider.
+2. **Let it iterate.** The multi-agent advantage shows up on long-horizon work. A 3-cycle run won't show it. Let it run overnight on a scratch branch with `MAX_CYCLES=100+`.
+3. **Point it at verifiable work.** Bug hunts, test coverage, invariant enforcement, refactors under a test harness — tasks where the adversary has ground truth to check against. Not blank-page design.
+4. **Keep the Constitution tight.** Vague rules give the adversary nothing to enforce. Concrete rules ("all DB access through `storage/`", "no new runtime deps without a line here") turn into real check-points.
+5. **Use the whiteboard to steer.** Don't let it drift for 50 cycles without direction. A one-line whiteboard note every few hours keeps the loop on-rails.
+6. **Start with two roles if you're unsure.** Set `GRINDER_MODEL=""`. Architect + Adversary alternating is the documented mechanism; Grinder is a specialty on top. Simpler default = easier to verify it's actually working before you add more.
 
 ## ⚠️ Honest caveats
 

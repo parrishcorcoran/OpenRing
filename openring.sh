@@ -22,8 +22,8 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-}"
 OLLAMA_IN_ROTATION="${OLLAMA_IN_ROTATION:-0}"
 
 MAX_CYCLES="${MAX_CYCLES:-15}"
-CHAOS_RATE="${CHAOS_RATE:-20}"
-STALL_LIMIT="${STALL_LIMIT:-3}"
+CHAOS_RATE="${CHAOS_RATE:-15}"      # round-robin already gives ~33% adversary; 15% extra ≈ 43% total
+STALL_LIMIT="${STALL_LIMIT:-2}"     # fast intervention when architect/adversary deadlock
 COOLDOWN="${COOLDOWN:-5}"
 LOG_DIR="${LOG_DIR:-.openring/logs}"
 
@@ -51,10 +51,23 @@ HAVE_CURL=0; command -v curl >/dev/null 2>&1 && HAVE_CURL=1
 echo "🚀 OpenRing starting in $(pwd)"
 echo "   Architect: $ARCHITECT_MODEL"
 echo "   Adversary: $ADVERSARY_MODEL"
-echo "   Grinder:   $GRINDER_MODEL"
+echo "   Grinder:   ${GRINDER_MODEL:-<disabled — running 2-role loop>}"
 [ -n "$OLLAMA_MODEL" ] && echo "   Ollama:    $OLLAMA_MODEL $([ "$OLLAMA_IN_ROTATION" = 1 ] && echo '(in rotation)' || echo '(hot-swap fallback)')"
 [ -n "$DASH_URL" ] && echo "   Dashboard: $DASH_URL"
 [ -n "$REMOTE_BRANCH" ] && echo "   Remote:    pulling/pushing $REMOTE_BRANCH each cycle"
+
+# Cross-family check. Research on LLM-as-judge shows same-family critique rubber-stamps.
+# If Architect and Adversary share a provider prefix, warn loudly — this neuters the core mechanism.
+ARCH_PROVIDER="${ARCHITECT_MODEL%%/*}"
+ADV_PROVIDER="${ADVERSARY_MODEL%%/*}"
+if [ -n "$ARCH_PROVIDER" ] && [ "$ARCH_PROVIDER" = "$ADV_PROVIDER" ]; then
+  echo ""
+  echo "⚠️  ARCHITECT and ADVERSARY share provider '$ARCH_PROVIDER'."
+  echo "   Same-family critic ≈ rubber-stamp. The adversarial mechanism only works"
+  echo "   across model families. Set ADVERSARY_MODEL to a different provider"
+  echo "   (e.g. github-copilot/* or google/*) for real critique."
+  echo ""
+fi
 
 # ---------- Dashboard helpers ----------
 dash() {
@@ -73,12 +86,9 @@ dash() {
 }
 
 json_str() {
-  # Portable JSON-string escape via python. Falls back to a dumb escape.
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'
-  else
-    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g' | awk '{print "\""$0"\""}'
-  fi
+  # Portable JSON-string escape. Requires python3 (present on macOS and every
+  # mainstream Linux by default). We only use this for whiteboard sync-out.
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")'
 }
 
 report_status() {
@@ -240,12 +250,18 @@ while (( CYCLE < MAX_CYCLES )); do
   elif (( RANDOM % 100 < CHAOS_RATE )); then
     ROLE="adversary"; MODEL="$ADVERSARY_MODEL"
     echo "🚨 Chaos round: Adversary."
-  elif [ "$OLLAMA_IN_ROTATION" = 1 ] && [ -n "$OLLAMA_MODEL" ]; then
+  elif [ "$OLLAMA_IN_ROTATION" = 1 ] && [ -n "$OLLAMA_MODEL" ] && [ -n "$GRINDER_MODEL" ]; then
     case $((CYCLE % 4)) in
       1) ROLE="architect"; MODEL="$ARCHITECT_MODEL" ;;
       2) ROLE="adversary"; MODEL="$ADVERSARY_MODEL" ;;
       3) ROLE="grinder";   MODEL="$GRINDER_MODEL"   ;;
       0) ROLE="grinder";   MODEL="$OLLAMA_MODEL"    ;;
+    esac
+  elif [ -z "$GRINDER_MODEL" ]; then
+    # Two-role loop: Architect + Adversary only. Simpler starting point; single plan works.
+    case $((CYCLE % 2)) in
+      1) ROLE="architect"; MODEL="$ARCHITECT_MODEL" ;;
+      0) ROLE="adversary"; MODEL="$ADVERSARY_MODEL" ;;
     esac
   else
     case $((CYCLE % 3)) in
@@ -262,6 +278,17 @@ while (( CYCLE < MAX_CYCLES )); do
   # After Architect, sync whiteboard file → dashboard (reflects any clearing).
   [ "$ROLE" = "architect" ] && sync_whiteboard_out
 
+  # Compute new tree hash once, use it for both the test-touched check and the stall check.
+  NEW_TREE="$(git write-tree 2>/dev/null || echo none)"
+
+  # Soft check: Adversary cycles should usually touch a test file. If not, surface it —
+  # don't enforce. Sometimes "no flaws found, logged" is genuinely the right output.
+  if [ "$ROLE" = "adversary" ] && [ "$NEW_TREE" != "$LAST_TREE" ]; then
+    if ! git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -qiE '(test|spec)'; then
+      echo "   ℹ  Adversary committed but did not touch a test/spec file. Review whether critique was evidence-based."
+    fi
+  fi
+
   # Push any agent commits back to remote.
   if [ -n "$REMOTE_BRANCH" ]; then
     # shellcheck disable=SC2086
@@ -269,7 +296,6 @@ while (( CYCLE < MAX_CYCLES )); do
   fi
 
   # Stall check.
-  NEW_TREE="$(git write-tree 2>/dev/null || echo none)"
   if [ "$NEW_TREE" = "$LAST_TREE" ]; then
     STALL_COUNT=$((STALL_COUNT + 1))
     echo "⏸  No tree change (stall $STALL_COUNT / $STALL_LIMIT)"
