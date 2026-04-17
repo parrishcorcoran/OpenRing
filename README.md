@@ -1,83 +1,86 @@
 # ⭕ OpenRing
 
-**A multi-agent orchestrator built on [`opencode`](https://opencode.ai). Rotates Claude, Copilot, Gemini, and a local Ollama model through Architect / Adversary / Grinder roles — funded by plan logins, no API keys.**
+**An unattended multi-model review loop for [opencode](https://opencode.ai). Rotates Claude, Copilot, and Gemini through Architect / Adversary / Grinder roles with a forced schedule and a stall-detection circuit breaker — so you can kick off a coding session, walk away, and come back to a branch of reviewed commits.**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Install](https://img.shields.io/badge/install-1_line-brightgreen.svg)
 ![Status](https://img.shields.io/badge/status-experimental-orange.svg)
 
-OpenRing is a thin orchestration layer on top of [opencode](https://opencode.ai), the open-source agentic coding CLI. opencode is the agent — it edits files, runs bash, and makes commits. OpenRing rotates it through three different provider/model backends with three different system prompts, so the code that gets committed is written by one model and critiqued by a different one.
+## What this is (and isn't)
 
-Because opencode authenticates to each provider with `opencode auth login` using each vendor's official OAuth flow for third-party clients, your **plan subscription** funds the loop. No API keys, no per-token billing. Ollama rounds it out as a free local fallback that hot-swaps in when a plan model rate-limits or runs out of credits.
+**What it is:** a small, opinionated opencode preset. A set of subagent configs, slash commands, an `AGENTS.md` template, and a ~60-line `openring.sh` scheduler that loops opencode with forced role rotation and an external stall breaker.
 
-## ✨ Why it actually produces better code
+**What it isn't:** an agent. opencode is the agent. OpenRing is the clock and the referee.
 
-Single-agent coding loops suffer from **consensus bias**: the model that wrote the code is the same model grading the code, so it rubber-stamps its own work. OpenRing breaks that loop by:
+Everything opencode already does well — multi-provider routing via plan logins, subagents, `AGENTS.md` persistent memory, `/compact` for context — OpenRing *uses*, it doesn't re-implement.
 
-- **🧠 Architect** (default: `anthropic/claude-sonnet-4-5`) — picks the next goal and implements it.
-- **🛡️ Adversary** (default: `github-copilot/gpt-5`) — a *different model family* required to find a concrete, reproducible flaw. A failing test is the preferred output.
-- **⚙️ Grinder** (default: `google/gemini-2.5-pro`) — runs build/tests/lint and fixes whatever is red with the smallest possible diff.
-- **🔧 Ollama fallback** (optional, e.g. `ollama/qwen2.5-coder`) — hot-swaps in when a plan model errors, and optionally joins the rotation as a 4th role for free local grinder work.
+## Why it produces better code than a single opencode session
 
-This is not "emergent superintelligence" — it's just good engineering hygiene: different incentives per role, a different model per role so they don't agree out of training similarity, and written-down state (`CONSTITUTION.md` + `RING_GOALS.md`) instead of a drifting chat history.
+One agent grading its own work is consensus bias. OpenRing structurally prevents that by:
+
+1. **Different model per role.** Architect = Claude. Adversary = Copilot (GPT family). Grinder = Gemini. Different training distributions, genuinely independent failure modes.
+2. **Forced rotation.** The Adversary runs on a schedule, not when the Architect decides to ask for a review. The bash loop guarantees it.
+3. **Adversary-as-panel (`/ring-adversary-panel`).** Big commits can be reviewed by all three models in parallel; a flaw found by 2+ agents is high-priority.
+4. **Voting on hard decisions (`/ring-vote`).** For architecture-level choices, ask all three models and take the majority view with dissenting opinions preserved.
+5. **Ollama hot-swap.** When a plan model rate-limits, an Ollama model takes the cycle. The loop doesn't stall waiting on quota reset.
 
 ## 🚀 Quick Start
 
-**1. Install opencode** — https://opencode.ai
-
-**2. Log into the providers you have plans for:**
-
 ```bash
-opencode auth login  # pick Anthropic, log in with Claude Pro/Max
-opencode auth login  # pick GitHub Copilot, log in with GitHub
-opencode auth login  # pick Google, log in with your Gemini plan
-```
+# 1. Install opencode — https://opencode.ai
 
-**3. (Optional) Install Ollama** for the free local fallback:
+# 2. Log into the providers you have plans for (no API keys needed)
+opencode auth login   # pick Anthropic
+opencode auth login   # pick GitHub Copilot
+opencode auth login   # pick Google
 
-```bash
-# https://ollama.com
-ollama pull qwen2.5-coder       # ~4GB, fast hot-swap
-# or a heavier option:
-ollama pull deepseek-coder-v2
-```
+# 3. (Optional) Install Ollama for hot-swap fallback
+ollama pull qwen2.5-coder
 
-**4. Install OpenRing:**
-
-```bash
+# 4. Install OpenRing
 curl -fsSL https://raw.githubusercontent.com/parrishcorcoran/OpenRing/main/install.sh | bash
-```
 
-(Audit the installer first: [`install.sh`](./install.sh). ~60 lines, no binaries, no shell-rc edits.)
-
-Or clone manually:
-
-```bash
-git clone https://github.com/parrishcorcoran/OpenRing.git
-cd OpenRing
-./openring.sh
-```
-
-**5. Run the Ring** in any git repo that has `CONSTITUTION.md` and `RING_GOALS.md`:
-
-```bash
+# 5. In your project
 cd your-project
-openring
+cp ~/.openring/AGENTS.md.template ./AGENTS.md         # project blackboard
+cp -r ~/.openring/.opencode ./                         # subagents + slash commands
+# edit AGENTS.md to describe your project
+openring                                               # run the loop
 ```
 
-## 🌀 How it works
+## 📁 What gets installed into your project
 
-1. Each cycle picks a role from the round-robin (`Architect → Adversary → Grinder`, or 4-way with Ollama).
-2. With probability `CHAOS_RATE` (default 20%) the role is overridden to **Adversary**.
-3. The agent reads `CONSTITUTION.md` (hard rules) and `RING_GOALS.md` (shared checklist + known issues).
-4. opencode edits files, commits, and updates `RING_GOALS.md` with what it did and any new issues.
-5. If the primary model errors (rate limit / auth / credits), OpenRing **hot-swaps to Ollama** for that cycle and keeps moving.
-6. A **Circuit Breaker** watches the git tree hash. If 3 consecutive cycles make zero file changes, it forces the next Architect turn to shrink-or-block the current objective.
-7. A **Context Summarizer** compresses `RING_GOALS.md` every 10 cycles (or when it exceeds 800 lines) so the loop can run for days without agents drowning in their own logs.
+When you copy the preset into a project, you get:
+
+```
+your-project/
+├── AGENTS.md                       # Constitution + shared goals. opencode reads this every session.
+└── .opencode/
+    ├── agent/
+    │   ├── architect.md            # Claude — picks next goal, implements
+    │   ├── adversary.md            # Copilot — mandatory critic, writes failing tests
+    │   └── grinder.md              # Gemini — runs build/tests, smallest-diff fixes
+    └── command/
+        ├── ring-cycle.md           # One rotation (role picked by openring.sh)
+        ├── ring-vote.md            # Fan a question to all 3, tally majority
+        └── ring-adversary-panel.md # All 3 review last commits in parallel
+```
+
+> The exact directory layout (`.opencode/agent/` vs `.opencode/agents/`, `command/` vs `commands/`) has shifted across opencode versions. If the preset doesn't load, run `opencode --help` and check the paths your version expects, then rename. The preset is plain markdown — there's nothing magic about the folder names.
+
+## 🌀 The loop
+
+`openring.sh` is ~60 lines. It does exactly three things opencode doesn't do on its own:
+
+1. **Schedules cycles.** `while (cycle < MAX_CYCLES)` — picks a role (round-robin with 20% chaos override to Adversary) and runs `opencode run "@<role> proceed"`.
+2. **Detects stalls.** After each cycle, compares `git write-tree` hash. If 3 consecutive cycles produce no file changes, it trips a circuit breaker: next cycle is forced to Architect with a prompt to shrink or block the current objective.
+3. **Hot-swaps to Ollama.** If opencode exits non-zero (rate limit, credits, auth), the same prompt is re-run through your Ollama model so the cycle isn't wasted.
+
+That's the whole script. Everything else — edits, commits, reading `AGENTS.md`, compressing context — opencode handles.
 
 ## ⚙️ Configuration
 
-Everything is env-var tunable. Defaults shown.
+Env vars, defaults shown:
 
 ```bash
 ARCHITECT_MODEL="anthropic/claude-sonnet-4-5"
@@ -88,24 +91,18 @@ OLLAMA_IN_ROTATION=0               # 1 = include Ollama as a 4th role
 MAX_CYCLES=15
 CHAOS_RATE=20                      # % chance of a forced Adversary cycle
 STALL_LIMIT=3                      # no-progress cycles before breaker trips
-SUMMARIZE_EVERY=10
-GOALS_SOFT_CAP=800                 # lines in RING_GOALS.md
 COOLDOWN=5                         # seconds between cycles
 ```
 
-Model IDs shift as vendors release new versions. Run `opencode models` to see what your logins currently have access to, and override the env vars to match.
+Model IDs shift as vendors ship new versions. Run `opencode models` to see what your logins currently have access to, and override the env vars to match.
 
-## 🔒 The Constitution
+## ⚠️ Honest caveats
 
-`CONSTITUTION.md` is the project-specific firewall. Every agent reads it every turn. Put your non-negotiable architectural decisions here (language choice, memory rules, public API shape) so long-running loops don't hallucinate them away on cycle 47.
-
-## ⚠️ Limits and honest caveats
-
-- **Experimental.** Autonomous commit loops produce broken commits sometimes. Run on a scratch branch.
-- **Plan limits exist.** Your Claude / Copilot / Gemini subscriptions have usage caps. If you crank `MAX_CYCLES` to 500 you will hit them. Ollama fallback is what lets the loop keep moving when you do.
-- **No ToS evasion.** opencode uses each vendor's sanctioned OAuth flow for third-party clients. OpenRing does not disguise traffic, bypass rate limits, or run headless on plans whose terms forbid it. Check your own plan's terms if you're unsure.
-- **No magic.** OpenRing is ~200 lines of bash around opencode. The intelligence comes from the models.
+- **Experimental.** Unattended commit loops produce broken commits sometimes. Run on a scratch branch.
+- **Plan limits are real.** Every provider has caps. `MAX_CYCLES=500` will hit them. Ollama fallback is what keeps the loop moving when you do.
+- **No ToS evasion.** opencode uses each vendor's sanctioned OAuth flow. OpenRing doesn't disguise traffic, bypass rate limits, or use plans in ways their terms forbid. Check your own plan's terms if unsure.
 - **Review your diffs.** The Ring produces candidate code quickly. A human still merges.
+- **Preset, not magic.** The intelligence comes from opencode and the models behind it. OpenRing is the clock.
 
 ## License
 

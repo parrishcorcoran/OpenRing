@@ -70,9 +70,13 @@ cat <<EOF
 ✅ OpenRing installed.
 
 Next:
-  1. cd into a project that has (or will have) CONSTITUTION.md and RING_GOALS.md.
-  2. Run:  $LAUNCH_HINT
-  3. Review diffs before merging. The Ring commits on its own.
+  1. Install opencode (https://opencode.ai) and run 'opencode auth login' per provider.
+  2. In your project:
+       cp $OPENRING_HOME/AGENTS.md.template ./AGENTS.md
+       cp -r $OPENRING_HOME/.opencode ./
+     Then edit AGENTS.md to describe your project.
+  3. Run:  $LAUNCH_HINT
+  4. Review diffs before merging. The Ring commits on its own.
 
 Uninstall:
   rm -rf "$OPENRING_HOME" && rm -f "\$(command -v openring 2>/dev/null)"

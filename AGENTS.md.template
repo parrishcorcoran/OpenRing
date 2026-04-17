@@ -1,0 +1,57 @@
+# AGENTS.md
+
+opencode reads this file every session. It's the project blackboard for OpenRing cycles. Replace the placeholders below with your project's actual invariants and goals, then commit.
+
+---
+
+## Constitution (hard rules)
+
+These rules bind every agent every cycle. They outrank anything in Goals, the Cycle Log, or a model's prior context. If a goal conflicts with the Constitution, append the conflict to Known Issues and stop — do not violate.
+
+- **Respect the toolchain.** No new languages, package managers, or build systems without adding a justification line here first.
+- **Additive refactors.** Do not delete public functions, exported types, or foundational data structures. Deprecate, add alternatives, or schedule removal via Goals.
+- **No secrets in commits.** Never commit API keys, tokens, `.env` files, or anything resembling credentials.
+- **No ToS evasion.** Do not write code whose purpose is to bypass rate limits, disguise automated traffic as human traffic, or work around a vendor's terms of service.
+- **Tests accompany behavior changes.** Any cycle that changes observable behavior adds or updates a test in the same commit, or logs `test-debt` in Known Issues.
+- **Smallest-diff principle.** Prefer the minimal change that meets the goal. Cleanup commits are separate from feature commits.
+- **Adversary must be honest.** When acting as Adversary, find a real flaw or explicitly state "no flaws found in <sha>, verified by <check>". Manufactured nits are a violation.
+
+### Project-specific laws
+
+_(Add invariants that must survive 50 cycles without erosion. Examples: "All persistence goes through `storage/`." "Public API in `src/api.rs` is stable; additive changes only." "No new runtime dependencies without a justification line here.")_
+
+- _None yet._
+
+---
+
+## Current Objective
+
+_(One sentence. What is the Ring working toward right now? Update this as objectives change.)_
+
+Bootstrap the project and verify one full Architect → Adversary → Grinder round-trip completes.
+
+## Checkboxes
+
+- [ ] _(Replace with your first concrete, single-sitting task.)_
+
+## Known Issues (Adversary Logs)
+
+Format:
+
+```
+- [cycle N, commit <sha>] <one-line flaw description>
+  repro: <exact command or test that fails>
+  proposed fix: <one sentence>
+```
+
+_(Populated by Adversary cycles.)_
+
+## Cycle Log
+
+One bullet per cycle. Role, what changed, any follow-ups.
+
+- [cycle 0] bootstrap: initialized AGENTS.md from template.
+
+## Archive
+
+_(Populated by `/compact` or manual summarization once Cycle Log gets long.)_
