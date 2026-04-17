@@ -32,10 +32,19 @@ Prerequisites — install whichever of these you have access to:
 - [`gh`](https://cli.github.com/) + [`gh copilot`](https://docs.github.com/en/copilot/github-copilot-in-the-cli) extension
 - [`ollama`](https://ollama.com/) with a local coder model (e.g. `deepseek-coder-v2`, `qwen2.5-coder`)
 
+**One-line install** (read the script first if you're sensible about `curl | bash`):
+
 ```bash
-git clone https://github.com/yourusername/openring.git
-cd openring
-chmod +x openring.sh
+curl -fsSL https://raw.githubusercontent.com/parrishcorcoran/OpenRing/main/install.sh | bash
+```
+
+That clones into `~/.openring` and symlinks an `openring` command onto your `PATH`. The script is ~60 lines, no binaries, no shell-rc edits — [audit it here](./install.sh).
+
+**Or clone manually:**
+
+```bash
+git clone https://github.com/parrishcorcoran/OpenRing.git
+cd OpenRing
 ./openring.sh
 ```
 
