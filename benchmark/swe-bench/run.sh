@@ -12,6 +12,7 @@ TASK_IDS=""
 MAX_CYCLES="${MAX_CYCLES:-15}"
 OUTPUT_DIR="./swebench-output"
 RESUME=0
+RING_MODE="${RING_MODE:-round-robin}"    # round-robin | parallel
 # Each --baseline-cli takes "LABEL=CMD_TEMPLATE" where CMD_TEMPLATE has {prompt}.
 # Repeatable to compare OpenRing against multiple frontier CLIs on the same tasks.
 BASELINE_CLIS=()
@@ -24,11 +25,18 @@ while [ $# -gt 0 ]; do
     --max-cycles)     MAX_CYCLES="$2"; shift 2 ;;
     --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
     --baseline-cli)   BASELINE_CLIS+=("$2"); shift 2 ;;
+    --mode)           RING_MODE="$2"; shift 2 ;;
     --resume)         RESUME=1; shift ;;
     -h|--help)        sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$RING_MODE" in
+  round-robin|parallel) ;;
+  *) echo "❌ --mode must be 'round-robin' or 'parallel' (got: $RING_MODE)" >&2; exit 2 ;;
+esac
+export RING_MODE
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -63,7 +71,7 @@ for spec in "${BASELINE_CLIS[@]}"; do
 done
 
 START_TS=$(date +%s)
-echo "🏁 SWE-bench run: task_set=$TASK_SET  n=$N_TASKS  max_cycles=$MAX_CYCLES  output=$OUTPUT_DIR"
+echo "🏁 SWE-bench run: task_set=$TASK_SET  n=$N_TASKS  max_cycles=$MAX_CYCLES  mode=$RING_MODE  output=$OUTPUT_DIR"
 echo "   openring    → $PREDS"
 for i in "${!BASELINE_LABELS[@]}"; do
   echo "   baseline[${BASELINE_LABELS[$i]}] → ${BASELINE_PREDS[$i]}  (cmd: ${BASELINE_CMDS[$i]})"
@@ -228,7 +236,7 @@ for t in d.get("FAIL_TO_PASS",[]): print(t)' <<< "$task_json" 2>/dev/null)
   if [ -s "$TASK_DIR/openring.patch" ]; then
     OPENRING_NONEMPTY=$((OPENRING_NONEMPTY + 1))
   fi
-  append_prediction "$PREDS" "$INSTANCE_ID" "openring-${TASK_SET}" "$OR_PATCH"
+  append_prediction "$PREDS" "$INSTANCE_ID" "openring-${RING_MODE}-${TASK_SET}" "$OR_PATCH"
   echo "   ✅ openring: wall=$((TASK_END - TASK_START))s  patch_bytes=$(wc -c < "$TASK_DIR/openring.patch" | tr -d ' ')"
 
   # --- Baseline runs (one per --baseline-cli) ---

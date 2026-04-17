@@ -124,6 +124,29 @@ If you get worse-than-baseline numbers, the most likely causes are (in order):
 2. **`MAX_CYCLES` too low** — each task needs enough cycles for at least one critic round. Try 15-20.
 3. **The baseline CLIs have very different default behaviors around commits** — some commit aggressively, some wait for confirmation. If a CLI doesn't commit its fix, the patch extraction will be empty. Check the per-task logs.
 
+## A/B: round-robin vs parallel
+
+The `--mode` flag runs OpenRing in either orchestration mode. Run the same task set twice and compare:
+
+```bash
+# Round-robin: one agent per turn, sequential. 1× wall-clock, 1× rate-limit burn.
+./benchmark/swe-bench/run.sh --task-set lite --n-tasks 30 \
+  --mode round-robin \
+  --output-dir ~/bench-rr \
+  --baseline-cli "claude=claude -p --permission-mode acceptEdits {prompt}"
+
+# Parallel: all agents per turn in worktrees; winner merged by test+diff score.
+# ~3× rate-limit burn, ~1× wall-clock.
+./benchmark/swe-bench/run.sh --task-set lite --n-tasks 30 \
+  --mode parallel \
+  --output-dir ~/bench-par \
+  --baseline-cli "claude=claude -p --permission-mode acceptEdits {prompt}"
+```
+
+For parallel scoring to be meaningful, export `TEST_CMD` per task so the scheduler can rank worktree outputs by test-pass. Without it, scoring falls back to "did it commit + smallest diff" which is a weaker signal.
+
+Hypothesis the benchmark answers: **at equal total token budget, do round-robin and parallel converge to the same resolution rate, or does one actually beat the other?** Research suggests they should be similar, with round-robin slightly favored on iterative bounded tasks and parallel slightly favored on tasks with multiple valid solutions. SWE-bench leans toward the former. Expect close numbers; the interesting datum is *how close*.
+
 ## Flags
 
 ```
@@ -131,6 +154,7 @@ If you get worse-than-baseline numbers, the most likely causes are (in order):
 --n-tasks         N (random sample) | all     (default: 10)
 --task-ids        comma-separated instance_ids (overrides --n-tasks)
 --max-cycles      passed through to openring.sh (default: 15)
+--mode            round-robin | parallel      (default: round-robin)
 --output-dir      where to write everything    (default: ./swebench-output)
 --baseline-cli    LABEL=CMD_TEMPLATE (repeatable); runs single-CLI baseline
                   on every task. CMD_TEMPLATE uses {prompt}.

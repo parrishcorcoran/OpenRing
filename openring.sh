@@ -58,6 +58,16 @@ STALL_LIMIT="${STALL_LIMIT:-2}"                 # consecutive no-tree-change tur
 COOLDOWN="${COOLDOWN:-5}"                       # seconds between turns
 LOG_DIR="${LOG_DIR:-.openring/logs}"
 
+# Turn mode:
+#   round-robin (default) — one agent per turn, rotating. 1× wall-clock, 1× hourly rate-limit.
+#   parallel              — every turn runs all agents concurrently in worktrees; scheduler picks
+#                           a winner by TEST_CMD pass + commit + minimal diff, fast-forwards main.
+#                           ~1× wall-clock, ~3× hourly rate-limit, same total work per N cycles.
+RING_MODE="${RING_MODE:-round-robin}"
+# Optional test command used as the primary signal for scoring parallel-mode winners.
+# If unset, scoring falls back to "did it commit + smallest diff".
+TEST_CMD="${TEST_CMD:-}"
+
 # Remote dashboard (optional).
 DASH_URL="${OPENRING_DASHBOARD_URL:-}"
 DASH_TOKEN="${OPENRING_DASHBOARD_TOKEN:-}"
@@ -106,7 +116,8 @@ done
 [ -n "$OLLAMA_CMD" ] && [ "$OLLAMA_IN_ROTATION" != "1" ] && echo "   ollama hot-swap fallback: ${OLLAMA_LABEL:-$OLLAMA_CMD}"
 [ -n "$DASH_URL" ] && echo "   dashboard: $DASH_URL"
 [ -n "$REMOTE_BRANCH" ] && echo "   remote: pull/push $REMOTE_BRANCH each turn"
-echo "   chaos rate: $CHAOS_RATE%  ·  stall limit: $STALL_LIMIT  ·  max cycles: $MAX_CYCLES"
+echo "   ring mode: $RING_MODE  ·  chaos rate: $CHAOS_RATE%  ·  stall limit: $STALL_LIMIT  ·  max cycles: $MAX_CYCLES"
+[ -n "$TEST_CMD" ] && echo "   test cmd (parallel scoring): $TEST_CMD"
 
 # Cross-family warning: if any two rotation slots share a family, same-family critique may rubber-stamp.
 declare -A SEEN_FAMILIES
@@ -225,14 +236,18 @@ run_template() {
   return "${PIPESTATUS[0]}"
 }
 
+build_prompt() {
+  local mode="$1"
+  if [ "$mode" = "analyze" ]; then
+    echo "@critic Analyze the previous turn's commit per .opencode/agent/critic.md (or equivalent built-in critic mode). Read AGENTS.md and GOAL.md. Find one concrete flaw with a reproducer, or log 'no flaws found, verified by X' with evidence. Do not produce forward work this turn."
+  else
+    echo "@builder Proceed per .opencode/agent/builder.md (or equivalent build mode). Read AGENTS.md and GOAL.md. Check WHITEBOARD.md first — instructions there supersede the current goal. Commit when done."
+  fi
+}
+
 run_turn() {
   local mode="$1" cmd_template="$2" label="$3" log="$LOG_DIR/cycle-${CYCLE}-${mode}.log"
-  local prompt
-  if [ "$mode" = "analyze" ]; then
-    prompt="@critic Analyze the previous turn's commit per .opencode/agent/critic.md (or equivalent built-in critic mode). Read AGENTS.md and GOAL.md. Find one concrete flaw with a reproducer, or log 'no flaws found, verified by X' with evidence. Do not produce forward work this turn."
-  else
-    prompt="@builder Proceed per .opencode/agent/builder.md (or equivalent build mode). Read AGENTS.md and GOAL.md. Check WHITEBOARD.md first — instructions there supersede the current goal. Commit when done."
-  fi
+  local prompt; prompt=$(build_prompt "$mode")
 
   if run_template "$cmd_template" "$prompt" "$log"; then
     report_tail "$log"
@@ -245,6 +260,85 @@ run_turn() {
     run_template "$OLLAMA_CMD" "$prompt" "$log.fallback" || true
   fi
   report_tail "$log"
+}
+
+# Parallel mode: all agents run concurrently in their own worktrees. Winner is
+# merged into the main working tree by fast-forward. Scoring:
+#   + 200 if TEST_CMD passes (or +50 if unset)
+#   + 50  if committed anything
+#   - loc/10 (prefer minimal diffs, only when committed)
+run_parallel_turn() {
+  local mode; mode="$1"
+  local prompt; prompt=$(build_prompt "$mode")
+  local base_sha; base_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+  [ -z "$base_sha" ] && { echo "   (no HEAD yet; parallel mode needs at least one commit)"; return 1; }
+
+  local wt_base=".openring/worktrees/cycle-$CYCLE"
+  rm -rf "$wt_base"; mkdir -p "$wt_base"
+
+  local -a BR WT
+  local pids=()
+
+  for i in "${!AGENTS_CMDS[@]}"; do
+    BR[$i]="ring/c${CYCLE}-a${i}"
+    WT[$i]="$wt_base/agent-$i"
+    if ! git worktree add -b "${BR[$i]}" "${WT[$i]}" HEAD >/dev/null 2>&1; then
+      echo "   ⚠  worktree create failed for agent $i; skipping"
+      BR[$i]=""; WT[$i]=""
+      continue
+    fi
+    local cmd_template="${AGENTS_CMDS[$i]}" label="${AGENTS_LABELS[$i]}"
+    local log="$LOG_DIR/cycle-${CYCLE}-parallel-${i}-${mode}.log"
+    (
+      cd "${WT[$i]}" || exit 1
+      quoted=$(printf '%q' "$prompt")
+      full="${cmd_template//\{prompt\}/$quoted}"
+      eval "$full" > "$log" 2>&1
+    ) &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null; done
+
+  # Score each worktree.
+  local best_i=-1 best_score=-999999
+  for i in "${!AGENTS_CMDS[@]}"; do
+    [ -z "${WT[$i]:-}" ] && continue
+    local wt="${WT[$i]}" br="${BR[$i]}"
+    local commits; commits=$(git -C "$wt" rev-list --count "$base_sha..HEAD" 2>/dev/null || echo 0)
+    local loc; loc=$(git -C "$wt" diff --shortstat "$base_sha" HEAD 2>/dev/null | grep -oE '[0-9]+ (insertion|deletion)' | awk '{s+=$1} END{print s+0}')
+    local score=0
+    if [ "$commits" -gt 0 ]; then
+      score=$((score + 50))
+      if [ -n "$TEST_CMD" ]; then
+        if (cd "$wt" && bash -c "$TEST_CMD") >/dev/null 2>&1; then
+          score=$((score + 200))
+        fi
+      fi
+      score=$((score - loc / 10))
+    fi
+    echo "   agent $((i + 1)) (${AGENTS_LABELS[$i]}): commits=$commits loc=$loc score=$score"
+    if [ "$score" -gt "$best_score" ]; then
+      best_score=$score; best_i=$i
+    fi
+  done
+
+  # Merge winner (fast-forward; all branches were forked from same base_sha).
+  if [ "$best_i" -ge 0 ] && [ "$best_score" -gt 0 ]; then
+    local winner_br="${BR[$best_i]}"
+    echo "   🏆 winner: agent $((best_i + 1)) (${AGENTS_LABELS[$best_i]}) score=$best_score"
+    git merge --ff-only "$winner_br" >/dev/null 2>&1 || git reset --hard "$winner_br" >/dev/null 2>&1
+  else
+    echo "   ⚠  no productive agent this cycle"
+  fi
+
+  # Cleanup: remove worktrees and scratch branches.
+  for i in "${!AGENTS_CMDS[@]}"; do
+    [ -z "${WT[$i]:-}" ] || git worktree remove "${WT[$i]}" --force >/dev/null 2>&1 || true
+  done
+  for i in "${!AGENTS_CMDS[@]}"; do
+    [ -z "${BR[$i]:-}" ] || git branch -D "${BR[$i]}" >/dev/null 2>&1 || true
+  done
+  rm -rf "$wt_base" 2>/dev/null
 }
 
 # ---------- Main loop ----------
@@ -320,9 +414,18 @@ while (( CYCLE < MAX_CYCLES )); do
     MODE="produce"
   fi
 
-  echo "🎭 turn $CYCLE  ·  agent=$AGENT_LABEL  ·  mode=$MODE"
-  report_status
-  run_turn "$MODE" "$AGENT_CMD" "$AGENT_LABEL" || echo "   (non-zero exit; continuing)"
+  if [ "$RING_MODE" = "parallel" ]; then
+    echo "🎭 turn $CYCLE  ·  PARALLEL (all ${#AGENTS_CMDS[@]} agents)  ·  mode=$MODE"
+    # For dashboard reporting we label the turn with the first agent.
+    AGENT_LABEL="parallel(${#AGENTS_CMDS[@]})"
+    MODEL="$AGENT_LABEL"
+    report_status
+    run_parallel_turn "$MODE" || echo "   (parallel turn failed; continuing)"
+  else
+    echo "🎭 turn $CYCLE  ·  agent=$AGENT_LABEL  ·  mode=$MODE"
+    report_status
+    run_turn "$MODE" "$AGENT_CMD" "$AGENT_LABEL" || echo "   (non-zero exit; continuing)"
+  fi
 
   # Whiteboard may have been wiped by a Builder that addressed it — sync out.
   [ "$MODE" = "produce" ] && sync_whiteboard_out
