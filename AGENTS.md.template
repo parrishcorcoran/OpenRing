@@ -2,6 +2,8 @@
 
 opencode reads this file every session. It's the project blackboard for OpenRing cycles. Replace the placeholders below with your project's actual invariants and goals, then commit.
 
+**See also: `WHITEBOARD.md`.** That's the remote-control surface — edit it from anywhere (phone, GitHub web, Vercel dashboard) to give the next cycle a priority instruction. The Architect reads it before AGENTS.md's Current Objective.
+
 ---
 
 ## Constitution (hard rules)

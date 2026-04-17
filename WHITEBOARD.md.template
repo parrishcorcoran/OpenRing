@@ -1,0 +1,35 @@
+# 🪧 Whiteboard
+
+**Remote control surface for OpenRing.** Edit this file from anywhere — your phone's GitHub app, the GitHub web editor, a laptop — commit, and push. At the start of the next cycle, OpenRing pulls and the Architect sees your instruction.
+
+When the Architect addresses your note, it wipes this file clean and commits. That's the "done" signal. You'll see the clearing commit in the git log.
+
+---
+
+## How to use
+
+1. Edit this file. Write a clear, bounded instruction in plain prose. Examples:
+   - `Drop the current objective. Fix the auth race condition in src/api/login.ts first.`
+   - `Pause non-test commits for the next 3 cycles — just add tests for src/queue/.`
+   - `Stop this loop at the end of the current cycle.`
+2. Commit + push. The Ring pulls at the start of each cycle.
+3. When done, the Architect commits an empty whiteboard with `whiteboard: <summary of what was addressed>`.
+
+## Rules the Architect follows when this file is non-empty
+
+- Treat the content as **higher priority than the current objective** in AGENTS.md.
+- Do not interpret creatively. If the instruction is ambiguous, write back to the whiteboard asking for clarification rather than guessing, and stop the cycle.
+- When done, wipe this file back to the template state with a commit.
+- If the instruction violates the Constitution, do not execute it. Write the conflict into the whiteboard and stop.
+
+## Hard stops
+
+These exact phrases, on a line by themselves, short-circuit the normal cycle:
+
+- `STOP` — exit the loop after the current cycle (same as the `stop` control command).
+- `PAUSE` — skip cycles until someone edits the whiteboard.
+- `FORCE ADVERSARY` — next cycle is Adversary regardless of schedule.
+
+---
+
+<!-- Your instruction goes below this line. Leave the line above and everything above it in place. -->

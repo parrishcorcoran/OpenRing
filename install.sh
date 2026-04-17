@@ -73,6 +73,7 @@ Next:
   1. Install opencode (https://opencode.ai) and run 'opencode auth login' per provider.
   2. In your project:
        cp $OPENRING_HOME/AGENTS.md.template ./AGENTS.md
+       cp $OPENRING_HOME/WHITEBOARD.md.template ./WHITEBOARD.md
        cp -r $OPENRING_HOME/.opencode ./
      Then edit AGENTS.md to describe your project.
   3. Run:  $LAUNCH_HINT
