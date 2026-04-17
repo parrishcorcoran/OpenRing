@@ -1,61 +1,80 @@
 # ⭕ OpenRing
 
-**An unattended multi-model review loop for [opencode](https://opencode.ai). Rotates Claude, Copilot, and Gemini through Architect / Adversary / Grinder roles, with a git-backed whiteboard you can edit from anywhere to steer the loop while it runs.**
+**An unattended multi-model review loop for [opencode](https://opencode.ai). Three peer models take turns in a round-robin; on each turn, the current model either produces forward progress or (with chaos probability) analyzes the previous turn for flaws. `GOAL.md` says when to stop. `AGENTS.md` is the persistent memory. `WHITEBOARD.md` lets you steer from anywhere.**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Install](https://img.shields.io/badge/install-1_line-brightgreen.svg)
 ![Status](https://img.shields.io/badge/status-experimental-orange.svg)
 
-Run it overnight on a scratch branch. Wake up to a branch of reviewed commits, a ledger of issues the adversary found, and a redacted log tail you can peek at from your phone.
+Set a goal, walk away, come back to a branch of reviewed commits and a ledger of everything the critics caught.
+
+---
+
+## The shape
+
+```
+   ┌─────────── WHITEBOARD.md (remote steering, edit from anywhere) ───────────┐
+   │                                                                           │
+   │   cycle 1: model 1 ──► cycle 2: model 2 ──► cycle 3: model 3 ──►  ...     │
+   │                │                 │                 │                      │
+   │                ▼                 ▼                 ▼                      │
+   │           produce or         produce or        produce or                 │
+   │           analyze (random)   analyze (random)  analyze (random)           │
+   │                │                                                          │
+   │                ▼                                                          │
+   │         AGENTS.md (memory, constitution, critic logs, cycle log)          │
+   │                │                                                          │
+   │                ▼                                                          │
+   │         GOAL.md (checkboxes; all checked → ring stops, awaits human)      │
+   └───────────────────────────────────────────────────────────────────────────┘
+```
+
+Every turn, the scheduler:
+1. Checks `GOAL.md`. All checkboxes done or `GOAL: COMPLETE` seen? **Stop and wait for a human.**
+2. Picks the next model in the rotation (round-robin).
+3. Rolls the dice. With probability `CHAOS_RATE` (default 33%), this turn is **analyze** mode — the model critiques the previous commit instead of producing forward work. Otherwise it's **produce** mode.
+4. Invokes opencode as the builder or critic subagent.
+5. Lets opencode edit files, run tests, commit. Appends to the Cycle Log in `AGENTS.md`.
+6. Stall check, remote sync, dashboard ping.
+
+That's it. Two roles, three (or four) models, one goal file, one memory file, one whiteboard.
 
 ---
 
 ## The honest, research-grounded pitch
 
-Most multi-agent coding frameworks fail to beat a well-prompted single agent at equal compute. The literature is pretty clear about this:
+Most multi-agent coding frameworks fail to beat a well-prompted single agent at equal compute. The literature is clear:
 
 - [Multi-agent debate doesn't reliably outperform self-consistency](https://proceedings.mlr.press/v235/smit24a.html) (ICML 2024).
 - [Single-agent matches multi-agent at equal token budget](https://arxiv.org/html/2604.02460v1) on reasoning.
 - [MetaGPT's 85.9% HumanEval was vs a badly-underreported 67% GPT-4 baseline](https://github.com/geekan/MetaGPT/issues/418); real single-agent GPT-4 is 86.59%.
 - Multi-agent setups consume [4-220× more tokens than single-agent](https://d2jud02ci9yv69.cloudfront.net/2025-04-28-mad-159/blog/mad/).
 
-**But when they do win, the gains are real and the failure modes of single-agent are well-documented.** On SWE-bench Verified, [a multi-agent team with a dedicated reviewer hits ~72% vs ~65% single-agent using the same base model](https://aclanthology.org/2025.acl-long.189.pdf) — 7% absolute from structure alone. The mechanism: specialization plus cross-validation from a different perspective.
+**But when they do win, the gains are real.** On SWE-bench Verified, [a multi-agent team with a dedicated reviewer hits ~72% vs ~65% single-agent using the same base model](https://aclanthology.org/2025.acl-long.189.pdf) — 7% absolute from structure alone. The mechanism: specialization plus cross-validation from a different perspective.
 
-The single-agent failure modes multi-agent can address (when done right):
+Single-agent failure modes multi-agent can address (when done right):
 - **Degeneration-of-thought** — a model critiquing its own output [repeats its own reasoning errors across iterations](https://arxiv.org/html/2512.20845).
-- **Own-family preference** — models prefer outputs from their own training family, so same-model critique rubber-stamps.
+- **Own-family preference** — [models prefer outputs from their own family](https://arxiv.org/html/2506.09443v1); same-model critique rubber-stamps.
 - **Self-correction plateau** — [LLMs can't reliably fix their own errors without external feedback](https://proceedings.iclr.cc/paper_files/paper/2024/file/8b4add8b0aa8749d80a34ca5d941c355-Paper-Conference.pdf).
 
-**OpenRing's architecture is designed to hit every one of these conditions deliberately** — heterogeneous model families per role, mandatory critic with evidentiary requirements, persistent git-backed state, forced rotation, verification-friendly task shape, long-horizon by design, cost bounded by Ollama hot-swap.
+**OpenRing targets those exact conditions.** Heterogeneous model families in the rotation (not the same model three times). Random-but-guaranteed critique (not agent-decided review). Persistent git-backed state (not chat history). Verifiable task shape (tests, constitution, goal file). Long-horizon by design.
 
-On bounded, verifiable, long-horizon coding tasks — bug hunts, test coverage, invariant enforcement, iterative refactors — this is where the research says multi-agent *genuinely* works, and OpenRing targets that band on purpose. Expect 10-50% improvement on the right task structure, with occasional finds a single-agent loop would miss.
+On bounded, verifiable, long-horizon coding tasks — bug hunts, test coverage, invariant enforcement, iterative refactors — this is the narrow band where multi-agent actually works, and OpenRing is built to sit in it.
 
 For open-ended greenfield design, a well-prompted single Claude Opus call is often still your best bet. Honest is honest.
 
-Full citations and reasoning: [RESEARCH.md](./RESEARCH.md).
+Full citations and the failure-mode-to-response mapping: [RESEARCH.md](./RESEARCH.md).
 
-**Want to see it on your own code?** The repo ships with a [side-by-side benchmark harness](./benchmark) — clones your project into two worktrees, runs single-agent opencode in one and OpenRing in the other, scores both against your test suite. Not a scientific benchmark, but enough to feel the difference on *your* problem:
+**See it on your own code?** [Benchmark harness](./benchmark):
 
 ```bash
-./benchmark/benchmark.sh --demo                       # toy Python bug; 2 min
+./benchmark/benchmark.sh --demo                       # toy Python bug; ~2 min
 ./benchmark/benchmark.sh --repo ~/my-project \
   --task "Find and fix the race in src/queue" \
   --cycles 20
 ```
 
 ---
-
-## The four things that make it work
-
-1. **🧠 Architect** — `anthropic/claude-sonnet-4-5` by default. Picks the next goal from `AGENTS.md` (or the `WHITEBOARD.md` instruction if non-empty), implements, commits.
-2. **🛡️ Adversary** — `github-copilot/gpt-5` by default, a *different model family*. System-prompted to require a concrete reproducer: a failing test or explicit "no flaws found, verified by X" log. Manufactured nits are a constitution violation.
-3. **⚙️ Grinder** — `google/gemini-2.5-pro` by default. Runs build/tests/lint, fixes red with smallest-diff commits. No architectural changes. **Optional** — set `GRINDER_MODEL=""` to run the simpler two-role loop (Architect + Adversary) when you only have one or two plans.
-4. **🔧 Ollama hot-swap** — when a plan model rate-limits or errors, the same prompt re-runs through your local Ollama model so the cycle isn't wasted. Optional 4-way rotation lets Ollama do free mechanical work every 4th cycle.
-
-Plus two operational pieces:
-
-- **🪧 Whiteboard (`WHITEBOARD.md`)** — plain markdown in the repo. Edit it from your phone's GitHub editor, from Cursor, from the Vercel dashboard. Next cycle the Architect reads it, addresses it, and wipes it clean. Your remote-control surface costs nothing and runs anywhere git runs.
-- **📡 Vercel dashboard** (optional) — [live peek from anywhere](./dashboard). Shows cycle #, role, model, stall count, last commit SHA, and a **redacted** truncated tail. Only metadata crosses the wire; source and diffs stay in git. Same whiteboard, edited via textarea. Pause / resume / skip / force-adversary / stop buttons.
 
 ## 🚀 Quick Start
 
@@ -75,95 +94,88 @@ curl -fsSL https://raw.githubusercontent.com/parrishcorcoran/OpenRing/main/insta
 
 # 5. In your project
 cd your-project
-cp ~/.openring/AGENTS.md.template      ./AGENTS.md
-cp ~/.openring/WHITEBOARD.md.template  ./WHITEBOARD.md
-cp -r ~/.openring/.opencode            ./
-# edit AGENTS.md to describe your project
+cp ~/.openring/AGENTS.md.template     ./AGENTS.md
+cp ~/.openring/GOAL.md.template       ./GOAL.md
+cp ~/.openring/WHITEBOARD.md.template ./WHITEBOARD.md
+cp -r ~/.openring/.opencode           ./
+
+# 6. Edit AGENTS.md (constitution) and GOAL.md (checkboxes). Then:
 openring
 ```
 
-## 📁 What gets installed into your project
+## 📁 What lives in your project
 
 ```
 your-project/
-├── AGENTS.md                              # constitution + goals (opencode-native)
-├── WHITEBOARD.md                          # remote-control surface, editable from anywhere
+├── AGENTS.md                # constitution + memory (Cycle Log, Known Issues)
+├── GOAL.md                  # current objective — stop signal when done
+├── WHITEBOARD.md            # remote-control surface, editable from anywhere
 └── .opencode/
     ├── agent/
-    │   ├── architect.md                   # Claude Sonnet
-    │   ├── adversary.md                   # Copilot GPT
-    │   └── grinder.md                     # Gemini
+    │   ├── builder.md       # produce mode: make forward progress
+    │   └── critic.md        # analyze mode: find flaws, write failing tests
     └── command/
-        ├── ring-cycle.md                  # manual single cycle
-        ├── ring-vote.md                   # all 3 vote on a decision
-        └── ring-adversary-panel.md        # 2-of-3 agreement flags high-priority flaws
+        ├── ring-cycle.md              # manual single turn
+        ├── ring-vote.md               # all models vote on a decision
+        └── ring-adversary-panel.md    # all models review last commits in parallel
 ```
 
-> opencode's subagent/command directory names have shifted across versions (`.opencode/agent/` vs `.opencode/agents/`, etc). If the preset doesn't load, rename and file a one-line PR — the preset content is just markdown.
-
-## 🌀 How the loop works
-
-Each cycle, `openring.sh` does exactly the things opencode can't do on its own:
-
-1. **Pulls remote state.** `git pull` to pick up GitHub-edited whiteboards. `GET /api/whiteboard` to pick up Vercel-edited whiteboards. Whichever is newer wins.
-2. **Checks for hard-stops in the whiteboard.** Lines reading exactly `STOP`, `PAUSE`, or `FORCE ADVERSARY` short-circuit the normal cycle.
-3. **Polls the dashboard** (if configured) for control commands: pause / resume / skip / force-adversary / stop.
-4. **Picks a role.** Round-robin through Architect → Adversary → Grinder (4-way with Ollama if enabled). With probability `CHAOS_RATE` (default 20%), forces an Adversary cycle regardless — the Architect can't choose when to get critiqued.
-5. **Posts status + redacted tail** to the dashboard (metadata only, secrets scrubbed both client- and server-side).
-6. **Invokes opencode** with the subagent and the role prompt. Agent reads `AGENTS.md`, maybe `WHITEBOARD.md`, does its work, commits, appends to the Cycle Log. On provider failure, hot-swaps to Ollama for that cycle.
-7. **Syncs whiteboard back** to the dashboard after Architect cycles (so "cleared" state propagates).
-8. **Checks for stalls** via `git write-tree` hash. If 3 consecutive cycles touch zero files, a **circuit breaker** trips: next cycle is forced to Architect with a prompt to shrink-or-block the current objective.
-9. **Pushes commits** to remote if `OPENRING_REMOTE_BRANCH` is set.
+> opencode's subagent/command directory name has shifted across versions (`.opencode/agent/` vs `.opencode/agents/`, `command/` vs `commands/`). If the preset doesn't load, rename the folder. File a one-line PR.
 
 ## ⚙️ Configuration
 
 Env vars, defaults shown:
 
 ```bash
-# Models — override to match what your opencode auth login gives you
-ARCHITECT_MODEL="anthropic/claude-sonnet-4-5"
-ADVERSARY_MODEL="github-copilot/gpt-5"
-GRINDER_MODEL="google/gemini-2.5-pro"
+# Three peer models. Different families strongly recommended.
+MODEL_1="anthropic/claude-sonnet-4-5"
+MODEL_2="github-copilot/gpt-5"
+MODEL_3="google/gemini-2.5-pro"
+
+# Optional local model — either hot-swap fallback or a 4th rotation slot.
 OLLAMA_MODEL=""                            # e.g. "ollama/qwen2.5-coder"
-OLLAMA_IN_ROTATION=0                       # 1 = Ollama is every 4th role
+OLLAMA_IN_ROTATION=0                       # 1 = Ollama is the 4th peer
 
 # Loop behavior
 MAX_CYCLES=15
-CHAOS_RATE=15                              # % chance of forced Adversary on top of round-robin
-STALL_LIMIT=2                              # no-progress cycles → circuit breaker
-COOLDOWN=5                                 # seconds between cycles
+CHAOS_RATE=33                              # % chance a turn is Critic instead of Builder
+STALL_LIMIT=2                              # no-tree-change turns → circuit breaker
+COOLDOWN=5                                 # seconds between turns
 
 # Optional remote
 OPENRING_DASHBOARD_URL=""                  # e.g. https://your-ring.vercel.app
 OPENRING_DASHBOARD_TOKEN=""                # matches OPENRING_TOKEN on Vercel
-OPENRING_REMOTE_BRANCH=""                  # e.g. "origin main" to pull/push each cycle
+OPENRING_REMOTE_BRANCH=""                  # e.g. "origin main" to pull/push each turn
 ```
 
 Model IDs shift as vendors ship new versions. Run `opencode models` to see what your logins currently have access to.
 
-## 🔒 The Constitution
-
-`AGENTS.md` has a Constitution section — project invariants every agent reads every cycle. Put your non-negotiables here (language choice, public API shape, dependency policy) so long-running loops don't hallucinate them away on cycle 47. The default template ships with sensible project-agnostic rules (no secrets, no ToS evasion, smallest-diff, Adversary-must-be-honest); add your project-specific rules below them.
+**Single-model mode:** setting only `MODEL_1` runs the loop with one model rotating between build and analyze modes. This loses the core multi-agent mechanism (own-family preference means same-model critique rubber-stamps) — you'll see a startup warning. Use it for testing the scheduler; don't expect multi-agent gains.
 
 ## 🎯 Getting the behavior the research predicts
 
-The research is clear that multi-agent architectures only win under specific conditions. OpenRing is designed to hit them — but configuration matters:
+1. **Use different model families in the rotation.** [Models prefer outputs from their own training family](https://arxiv.org/html/2506.09443v1). OpenRing warns loudly at startup if two rotation slots share a provider. Cheapest fix: `MODEL_3="ollama/qwen2.5-coder"` — a local model from a different distribution.
+2. **Let it iterate.** The multi-agent advantage shows up on long-horizon work. A 3-turn run won't show it. Run overnight with `MAX_CYCLES=100+`.
+3. **Point it at verifiable work.** Bug hunts, test coverage, invariant enforcement, refactors under a test harness. Not blank-page design.
+4. **Keep the Constitution tight.** Vague rules give the Critic nothing to enforce. Concrete rules ("all DB access through `storage/`", "no new runtime deps without a line here") become real check-points.
+5. **Write a clear `GOAL.md`.** Sharp, bounded checkboxes. When they're all checked, the loop stops and waits for you — which is exactly what you want.
+6. **Use the whiteboard to steer.** A one-line whiteboard edit every few hours keeps a long loop on-rails without stopping it.
 
-1. **Use different model families for Architect and Adversary.** [Models prefer outputs from their own training family](https://arxiv.org/html/2506.09443v1); same-family critique rubber-stamps. If you only have one plan, the cheapest honest fix is `ADVERSARY_MODEL="ollama/qwen2.5-coder"` — a local model from a different distribution still breaks the own-family preference. OpenRing prints a loud warning at startup if both roles share a provider.
-2. **Let it iterate.** The multi-agent advantage shows up on long-horizon work. A 3-cycle run won't show it. Let it run overnight on a scratch branch with `MAX_CYCLES=100+`.
-3. **Point it at verifiable work.** Bug hunts, test coverage, invariant enforcement, refactors under a test harness — tasks where the adversary has ground truth to check against. Not blank-page design.
-4. **Keep the Constitution tight.** Vague rules give the adversary nothing to enforce. Concrete rules ("all DB access through `storage/`", "no new runtime deps without a line here") turn into real check-points.
-5. **Use the whiteboard to steer.** Don't let it drift for 50 cycles without direction. A one-line whiteboard note every few hours keeps the loop on-rails.
-6. **Start with two roles if you're unsure.** Set `GRINDER_MODEL=""`. Architect + Adversary alternating is the documented mechanism; Grinder is a specialty on top. Simpler default = easier to verify it's actually working before you add more.
+## 🪧 Remote control (two equivalent paths)
+
+Both write surfaces end up at the same on-disk `WHITEBOARD.md`. Pick whichever fits the moment.
+
+- **Edit the file via git.** GitHub mobile web editor, Cursor, any git client. Commit, push. Loop `git pull`s at the next turn (if `OPENRING_REMOTE_BRANCH` is set). Free, works everywhere.
+- **Edit via [the Vercel dashboard](./dashboard).** Deploys a tiny Next.js app with bearer-token auth, Vercel KV, and a textarea. Same file on the other side; loop syncs KV ↔ file at the start of each turn. Live status panel with redacted log tail. Pause / resume / skip / force-critic / stop buttons.
 
 ## ⚠️ Honest caveats
 
 - **Experimental.** Unattended commit loops produce broken commits sometimes. Run on a scratch branch.
-- **Plan limits are real.** Your Claude / Copilot / Gemini subscriptions have caps. `MAX_CYCLES=500` will hit them. Ollama fallback is what keeps the loop moving when you do.
+- **Plan limits are real.** Your subscriptions have caps. `MAX_CYCLES=500` will hit them. Ollama hot-swap keeps the loop moving when you do.
 - **No ToS evasion.** opencode uses each vendor's sanctioned OAuth flow. OpenRing doesn't disguise traffic, bypass rate limits, or use plans in ways their terms forbid.
-- **Task fit matters.** Bounded verifiable work (bugs, tests, refactors with tests as ground truth) — expect real gains. Open-ended creative or architectural design — expect no better than a single strong model. See [RESEARCH.md](./RESEARCH.md).
+- **Task fit matters.** Bounded verifiable work shines. Open-ended design doesn't. See [RESEARCH.md](./RESEARCH.md).
 - **Review your diffs.** The Ring produces candidate code quickly. A human still merges.
-- **Preset, not magic.** The intelligence comes from opencode and the models. OpenRing is the clock, the referee, and the steering wheel.
+- **Preset, not magic.** Intelligence comes from opencode and the models. OpenRing is the clock, the referee, and the steering wheel.
 
 ## License
 

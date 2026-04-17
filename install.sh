@@ -72,10 +72,11 @@ cat <<EOF
 Next:
   1. Install opencode (https://opencode.ai) and run 'opencode auth login' per provider.
   2. In your project:
-       cp $OPENRING_HOME/AGENTS.md.template ./AGENTS.md
+       cp $OPENRING_HOME/AGENTS.md.template     ./AGENTS.md
+       cp $OPENRING_HOME/GOAL.md.template       ./GOAL.md
        cp $OPENRING_HOME/WHITEBOARD.md.template ./WHITEBOARD.md
-       cp -r $OPENRING_HOME/.opencode ./
-     Then edit AGENTS.md to describe your project.
+       cp -r $OPENRING_HOME/.opencode           ./
+     Then edit AGENTS.md (constitution + memory) and GOAL.md (what to do).
   3. Run:  $LAUNCH_HINT
   4. Review diffs before merging. The Ring commits on its own.
 

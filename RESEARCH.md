@@ -38,14 +38,15 @@ Every one of these is a deliberate response to a specific failure mode in the li
 
 | Failure mode | OpenRing's response |
 |---|---|
-| Degeneration-of-thought from single-model self-critique | Architect / Adversary / Grinder use **different model families** by default (Claude / Copilot-GPT / Gemini). Same-family setups are possible but not encouraged. |
-| Own-family preference in LLM-as-judge | Adversary is mandated to use a different family from Architect. Adversary-panel mode runs *all three* in parallel; flaws reported by 2+ are flagged high-priority. |
-| Critic rubber-stamping ("looks fine") | Adversary system prompt **requires** a concrete reproducer (failing test, exact line numbers) or an explicit "no flaws found, verified by X" log with evidence. No vague prose. |
-| Context drift over long loops | Persistent state in git-tracked files (`AGENTS.md`, `WHITEBOARD.md`) instead of an ephemeral chat history. Every turn reads from disk, not memory. |
-| Architect skipping the review step | Role rotation is **external and forced** by a bash scheduler. Architect can't decide to skip the Adversary cycle. 20% chaos-rate override further randomizes when critique happens. |
-| 4-220× token cost of multi-agent | Ollama hot-swap fallback keeps cost bounded when plan models throttle. 4-way rotation with Ollama gives free mechanical work every 4th cycle. |
-| No steering of a 48-hour loop | `WHITEBOARD.md` is a plain file you edit from anywhere (GitHub mobile, Vercel dashboard, laptop). The Architect reads it before the objective and wipes it when addressed. |
-| Hyperparameter sensitivity | Everything exposed as env vars (`CHAOS_RATE`, `STALL_LIMIT`, `MAX_CYCLES`, model choices). Tunable per-project. |
+| Degeneration-of-thought from single-model self-critique | Three peer models rotate turns. On any given turn, the model in the seat is almost certainly *not* the one that produced the previous commit. Critique comes from a different training distribution by construction. |
+| Own-family preference in LLM-as-judge | Rotation pool defaults to three different provider families (anthropic/*, github-copilot/*, google/*). Startup warning if two slots share a provider. |
+| Critic rubber-stamping ("looks fine") | The `critic.md` subagent **requires** a concrete reproducer (failing test, exact line numbers) or an explicit "no flaws found, verified by X" log with evidence. No vague prose. |
+| Architect skipping the review step | The scheduler decides when a turn is analyze-mode, not the model. `CHAOS_RATE` (default 33%) is the probability any given turn is Critic. Can't be skipped from inside the loop. |
+| Context drift over long loops | Persistent state in git-tracked files (`AGENTS.md`, `GOAL.md`, `WHITEBOARD.md`) instead of an ephemeral chat history. Every turn reads from disk. |
+| 4-220× token cost of multi-agent | Ollama hot-swap fallback on plan-model failure. Optional: add Ollama as a 4th rotation slot for free turns. Stall detector prevents wasted cycles. |
+| No steering of a 48-hour loop | `WHITEBOARD.md` is a plain file you edit from anywhere (GitHub mobile, Vercel dashboard, laptop). The Builder reads it before GOAL.md and wipes it when addressed. |
+| No natural stop signal | `GOAL.md` is separate from memory. When all checkboxes are checked (or `GOAL: COMPLETE` appears), the loop stops and waits for a human. No infinite drift. |
+| Hyperparameter sensitivity | Everything exposed as env vars (`CHAOS_RATE`, `STALL_LIMIT`, `MAX_CYCLES`, model slots). Tunable per-project. |
 
 ## What OpenRing *doesn't* claim
 

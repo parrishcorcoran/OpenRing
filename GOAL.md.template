@@ -1,0 +1,22 @@
+# 🎯 Goal
+
+The stop signal for OpenRing. When every checkbox below is checked **or** a line reading exactly `GOAL: COMPLETE` appears anywhere in this file, the scheduler stops the loop and waits for a human.
+
+Keep this file small. Sharp, bounded checkboxes. If you find yourself writing a paragraph, move it to `WHITEBOARD.md` (for remote instruction) or `AGENTS.md` (for persistent constraints).
+
+---
+
+## Current Objective
+
+_(One sentence. What is the Ring working toward right now?)_
+
+Replace this with your actual objective.
+
+## Checkboxes
+
+- [ ] _(Your first single-sitting task.)_
+- [ ] _(The next one.)_
+
+## Done
+
+_(Checked items get moved here by the Builder when they're fully complete, to keep the active list lean. Optional — you can also just leave them checked up top.)_
