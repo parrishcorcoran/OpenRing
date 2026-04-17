@@ -124,33 +124,60 @@ your-project/
 
 ## ⚙️ Configuration
 
-Env vars, defaults shown:
+OpenRing is **CLI-agnostic**. Each rotation slot is a command template with `{prompt}` substituted at runtime. The defaults invoke opencode with a specific model, but you can point slots at any coding CLI — Claude Code, Codex, Gemini CLI, or anything else that takes a prompt as a final arg.
+
+### Default: opencode
 
 ```bash
-# Three peer models. Different families strongly recommended.
-MODEL_1="anthropic/claude-sonnet-4-5"
+MODEL_1="anthropic/claude-sonnet-4-5"    # used to build default AGENT_CMD_1
 MODEL_2="github-copilot/gpt-5"
 MODEL_3="google/gemini-2.5-pro"
+```
 
-# Optional local model — either hot-swap fallback or a 4th rotation slot.
-OLLAMA_MODEL=""                            # e.g. "ollama/qwen2.5-coder"
-OLLAMA_IN_ROTATION=0                       # 1 = Ollama is the 4th peer
+### Override: native frontier CLIs
 
-# Loop behavior
+```bash
+AGENT_CMD_1='claude -p --permission-mode acceptEdits {prompt}'
+AGENT_LABEL_1='claude-code'
+AGENT_FAMILY_1='anthropic'
+
+AGENT_CMD_2='codex exec {prompt}'
+AGENT_LABEL_2='codex'
+AGENT_FAMILY_2='openai'
+
+AGENT_CMD_3='gemini --yolo {prompt}'
+AGENT_LABEL_3='gemini-cli'
+AGENT_FAMILY_3='google'
+```
+
+`AGENT_FAMILY_N` is used for the same-family collision warning — set it to something distinct per provider. `{prompt}` is replaced with a shell-quoted form of the current turn's prompt before the command runs. Any CLI that accepts a prompt as its final argument works; for stdin-reading CLIs wrap with `sh -c`.
+
+### Optional local fallback
+
+```bash
+OLLAMA_MODEL="ollama/qwen2.5-coder"        # fallback when a plan CLI errors
+OLLAMA_CMD=""                              # or set explicit command template
+OLLAMA_IN_ROTATION=0                       # 1 = add Ollama as a 4th peer
+```
+
+### Loop behavior
+
+```bash
 MAX_CYCLES=15
 CHAOS_RATE=33                              # % chance a turn is Critic instead of Builder
 STALL_LIMIT=2                              # no-tree-change turns → circuit breaker
 COOLDOWN=5                                 # seconds between turns
+```
 
-# Optional remote
+### Optional remote
+
+```bash
 OPENRING_DASHBOARD_URL=""                  # e.g. https://your-ring.vercel.app
 OPENRING_DASHBOARD_TOKEN=""                # matches OPENRING_TOKEN on Vercel
 OPENRING_REMOTE_BRANCH=""                  # e.g. "origin main" to pull/push each turn
 ```
 
-Model IDs shift as vendors ship new versions. Run `opencode models` to see what your logins currently have access to.
-
-**Single-model mode:** setting only `MODEL_1` runs the loop with one model rotating between build and analyze modes. This loses the core multi-agent mechanism (own-family preference means same-model critique rubber-stamps) — you'll see a startup warning. Use it for testing the scheduler; don't expect multi-agent gains.
+**Single-agent mode:** setting only `AGENT_CMD_1` runs the loop with one agent alternating between build and analyze modes. This loses the core multi-agent mechanism (own-family preference means same-model critique rubber-stamps) — you'll see a startup warning. Use it for testing the scheduler; don't expect multi-agent gains.
 
 ## 🎯 Getting the behavior the research predicts
 

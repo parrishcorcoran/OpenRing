@@ -19,15 +19,37 @@
 set -uo pipefail
 
 # ---------- Config ----------
-# Three peer models. Different families strongly recommended — same-family
-# critique rubber-stamps. Run `opencode models` to see what you have access to.
+# Three peer agents. Each is invoked via a command template with {prompt}
+# substituted with a properly shell-quoted prompt. Defaults call opencode
+# with a specific model. Override to call native CLIs directly:
+#
+#   AGENT_CMD_1="claude -p --permission-mode acceptEdits {prompt}"
+#   AGENT_CMD_2="codex exec {prompt}"
+#   AGENT_CMD_3="gemini --yolo {prompt}"
+#
+# Each slot also has a display label (used in logs and dashboard) and
+# optionally a "family" hint used for the cross-family collision warning.
 MODEL_1="${MODEL_1:-anthropic/claude-sonnet-4-5}"
 MODEL_2="${MODEL_2:-github-copilot/gpt-5}"
 MODEL_3="${MODEL_3:-google/gemini-2.5-pro}"
 
-# Optional: local fallback and/or 4th rotation slot.
-OLLAMA_MODEL="${OLLAMA_MODEL:-}"                # e.g. ollama/qwen2.5-coder
-OLLAMA_IN_ROTATION="${OLLAMA_IN_ROTATION:-0}"   # 1 = Ollama is a 4th peer
+AGENT_CMD_1="${AGENT_CMD_1:-opencode run --model $MODEL_1 {prompt}}"
+AGENT_CMD_2="${AGENT_CMD_2:-opencode run --model $MODEL_2 {prompt}}"
+AGENT_CMD_3="${AGENT_CMD_3:-opencode run --model $MODEL_3 {prompt}}"
+
+AGENT_LABEL_1="${AGENT_LABEL_1:-$MODEL_1}"
+AGENT_LABEL_2="${AGENT_LABEL_2:-$MODEL_2}"
+AGENT_LABEL_3="${AGENT_LABEL_3:-$MODEL_3}"
+
+AGENT_FAMILY_1="${AGENT_FAMILY_1:-${MODEL_1%%/*}}"
+AGENT_FAMILY_2="${AGENT_FAMILY_2:-${MODEL_2%%/*}}"
+AGENT_FAMILY_3="${AGENT_FAMILY_3:-${MODEL_3%%/*}}"
+
+# Optional: local fallback. Used when any plan CLI errors. Same template shape.
+OLLAMA_MODEL="${OLLAMA_MODEL:-}"
+OLLAMA_CMD="${OLLAMA_CMD:-${OLLAMA_MODEL:+opencode run --model $OLLAMA_MODEL {prompt}}}"
+OLLAMA_LABEL="${OLLAMA_LABEL:-${OLLAMA_MODEL:-}}"
+OLLAMA_IN_ROTATION="${OLLAMA_IN_ROTATION:-0}"
 
 # Loop behavior.
 MAX_CYCLES="${MAX_CYCLES:-15}"
@@ -45,7 +67,6 @@ WHITEBOARD_FILE="WHITEBOARD.md"
 GOAL_FILE="GOAL.md"
 
 # ---------- Preconditions ----------
-command -v opencode >/dev/null 2>&1 || { echo "❌ opencode not found. Install: https://opencode.ai"; exit 1; }
 [ -f AGENTS.md ]      || { echo "❌ AGENTS.md not found. Copy the template from the OpenRing repo."; exit 1; }
 [ -f "$GOAL_FILE" ]   || { echo "❌ $GOAL_FILE not found. Copy the template from the OpenRing repo."; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ Not a git repo. Run 'git init' first."; exit 1; }
@@ -53,37 +74,53 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ Not a git rep
 mkdir -p "$LOG_DIR"
 HAVE_CURL=0; command -v curl >/dev/null 2>&1 && HAVE_CURL=1
 
-# Build the rotation pool from configured models.
-MODELS=()
-[ -n "$MODEL_1" ] && MODELS+=("$MODEL_1")
-[ -n "$MODEL_2" ] && MODELS+=("$MODEL_2")
-[ -n "$MODEL_3" ] && MODELS+=("$MODEL_3")
-[ "$OLLAMA_IN_ROTATION" = "1" ] && [ -n "$OLLAMA_MODEL" ] && MODELS+=("$OLLAMA_MODEL")
-[ "${#MODELS[@]}" -ge 1 ] || { echo "❌ Need at least one MODEL_{1,2,3} configured."; exit 1; }
-[ "${#MODELS[@]}" -eq 1 ] && echo "⚠️  Only one model configured — this is not multi-agent. Research says a single strong model usually matches this at equal compute."
+# Build the rotation pool. Each slot has: label (human-readable), command
+# template (with {prompt}), and family (for cross-family collision check).
+AGENTS_LABELS=()
+AGENTS_CMDS=()
+AGENTS_FAMILIES=()
+[ -n "$AGENT_CMD_1" ] && AGENTS_LABELS+=("$AGENT_LABEL_1") && AGENTS_CMDS+=("$AGENT_CMD_1") && AGENTS_FAMILIES+=("$AGENT_FAMILY_1")
+[ -n "$AGENT_CMD_2" ] && AGENTS_LABELS+=("$AGENT_LABEL_2") && AGENTS_CMDS+=("$AGENT_CMD_2") && AGENTS_FAMILIES+=("$AGENT_FAMILY_2")
+[ -n "$AGENT_CMD_3" ] && AGENTS_LABELS+=("$AGENT_LABEL_3") && AGENTS_CMDS+=("$AGENT_CMD_3") && AGENTS_FAMILIES+=("$AGENT_FAMILY_3")
+if [ "$OLLAMA_IN_ROTATION" = "1" ] && [ -n "$OLLAMA_CMD" ]; then
+  AGENTS_LABELS+=("$OLLAMA_LABEL")
+  AGENTS_CMDS+=("$OLLAMA_CMD")
+  AGENTS_FAMILIES+=("ollama")
+fi
+
+[ "${#AGENTS_CMDS[@]}" -ge 1 ] || { echo "❌ Need at least one AGENT_CMD_{1,2,3} configured."; exit 1; }
+[ "${#AGENTS_CMDS[@]}" -eq 1 ] && echo "⚠️  Only one agent configured — this is not multi-agent. Research says a single strong model usually matches this at equal compute."
+
+# Sanity-check the binary for each agent command (best-effort: check the first token is on PATH).
+for i in "${!AGENTS_CMDS[@]}"; do
+  bin="${AGENTS_CMDS[$i]%% *}"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "⚠️  agent $((i + 1)) (${AGENTS_LABELS[$i]}): '$bin' not found on PATH."
+  fi
+done
 
 echo "🚀 OpenRing starting in $(pwd)"
-for i in "${!MODELS[@]}"; do
-  echo "   model $((i + 1)): ${MODELS[$i]}"
+for i in "${!AGENTS_LABELS[@]}"; do
+  echo "   agent $((i + 1)): ${AGENTS_LABELS[$i]}  [${AGENTS_FAMILIES[$i]}]"
 done
-[ -n "$OLLAMA_MODEL" ] && [ "$OLLAMA_IN_ROTATION" != "1" ] && echo "   ollama hot-swap fallback: $OLLAMA_MODEL"
+[ -n "$OLLAMA_CMD" ] && [ "$OLLAMA_IN_ROTATION" != "1" ] && echo "   ollama hot-swap fallback: ${OLLAMA_LABEL:-$OLLAMA_CMD}"
 [ -n "$DASH_URL" ] && echo "   dashboard: $DASH_URL"
 [ -n "$REMOTE_BRANCH" ] && echo "   remote: pull/push $REMOTE_BRANCH each turn"
 echo "   chaos rate: $CHAOS_RATE%  ·  stall limit: $STALL_LIMIT  ·  max cycles: $MAX_CYCLES"
 
-# Cross-family warning: if any two models share a provider prefix, same-family critique may rubber-stamp.
-declare -A SEEN_PROVIDERS
-for m in "${MODELS[@]}"; do
-  p="${m%%/*}"
-  if [ -n "${SEEN_PROVIDERS[$p]:-}" ]; then
+# Cross-family warning: if any two rotation slots share a family, same-family critique may rubber-stamp.
+declare -A SEEN_FAMILIES
+for f in "${AGENTS_FAMILIES[@]}"; do
+  [ -z "$f" ] && continue
+  if [ -n "${SEEN_FAMILIES[$f]:-}" ]; then
     echo ""
-    echo "⚠️  Two or more rotation models share provider '$p'."
-    echo "   Same-family critique tends to rubber-stamp. Mix providers for real critique"
-    echo "   (anthropic/* + github-copilot/* + google/*, or add ollama/* for a free third)."
+    echo "⚠️  Two or more rotation slots share family '$f'."
+    echo "   Same-family critique tends to rubber-stamp. Mix families for real critique"
+    echo "   (anthropic + openai + google, or add ollama for a free fourth)."
     echo ""
     break
   fi
-  SEEN_PROVIDERS[$p]=1
+  SEEN_FAMILIES[$f]=1
 done
 
 # ---------- Dashboard helpers ----------
@@ -176,24 +213,36 @@ goal_reached() {
   return 0
 }
 
-# ---------- opencode runner ----------
+# ---------- Agent runner ----------
+# Substitute {prompt} in CMD_TEMPLATE with a shell-quoted prompt, then eval.
+# eval is acceptable here because the template comes from user config, not
+# untrusted input — same trust model as a shell alias or git config command.
+run_template() {
+  local cmd_template="$1" prompt="$2" log="$3"
+  local quoted; quoted=$(printf '%q' "$prompt")
+  local cmd="${cmd_template//\{prompt\}/$quoted}"
+  eval "$cmd" 2>&1 | tee "$log"
+  return "${PIPESTATUS[0]}"
+}
+
 run_turn() {
-  local mode="$1" model="$2" log="$LOG_DIR/cycle-${CYCLE}-${mode}.log"
-  local agent prompt
+  local mode="$1" cmd_template="$2" label="$3" log="$LOG_DIR/cycle-${CYCLE}-${mode}.log"
+  local prompt
   if [ "$mode" = "analyze" ]; then
-    agent="critic"
-    prompt="@critic Analyze the previous turn's commit per .opencode/agent/critic.md. Read AGENTS.md and GOAL.md. Do not produce forward work this turn."
+    prompt="@critic Analyze the previous turn's commit per .opencode/agent/critic.md (or equivalent built-in critic mode). Read AGENTS.md and GOAL.md. Find one concrete flaw with a reproducer, or log 'no flaws found, verified by X' with evidence. Do not produce forward work this turn."
   else
-    agent="builder"
-    prompt="@builder Proceed per .opencode/agent/builder.md. Read AGENTS.md and GOAL.md. Check WHITEBOARD.md first — instructions there supersede the current goal. Commit when done."
+    prompt="@builder Proceed per .opencode/agent/builder.md (or equivalent build mode). Read AGENTS.md and GOAL.md. Check WHITEBOARD.md first — instructions there supersede the current goal. Commit when done."
   fi
 
-  opencode run --model "$model" "$prompt" 2>&1 | tee "$log"
-  local rc=${PIPESTATUS[0]}
+  if run_template "$cmd_template" "$prompt" "$log"; then
+    report_tail "$log"
+    return 0
+  fi
+  local rc=$?
 
-  if [ "$rc" -ne 0 ] && [ -n "$OLLAMA_MODEL" ] && [ "$model" != "$OLLAMA_MODEL" ]; then
-    echo "   ⚠  $model failed (exit $rc). Hot-swapping to $OLLAMA_MODEL"
-    opencode run --model "$OLLAMA_MODEL" "$prompt" 2>&1 | tee "$log.fallback"
+  if [ -n "$OLLAMA_CMD" ] && [ "$cmd_template" != "$OLLAMA_CMD" ]; then
+    echo "   ⚠  $label failed (exit $rc). Hot-swapping to ${OLLAMA_LABEL:-Ollama}"
+    run_template "$OLLAMA_CMD" "$prompt" "$log.fallback" || true
   fi
   report_tail "$log"
 }
@@ -248,9 +297,12 @@ while (( CYCLE < MAX_CYCLES )); do
   esac
   if [ "$PAUSED" = 1 ]; then sleep "$COOLDOWN"; CYCLE=$((CYCLE - 1)); continue; fi
 
-  # Pick the model for this turn (round-robin).
-  MODEL_IDX=$(( (CYCLE - 1) % ${#MODELS[@]} ))
-  MODEL="${MODELS[$MODEL_IDX]}"
+  # Pick the agent for this turn (round-robin across configured slots).
+  AGENT_IDX=$(( (CYCLE - 1) % ${#AGENTS_CMDS[@]} ))
+  AGENT_LABEL="${AGENTS_LABELS[$AGENT_IDX]}"
+  AGENT_CMD="${AGENTS_CMDS[$AGENT_IDX]}"
+  # Legacy names that the dashboard report still references.
+  MODEL="$AGENT_LABEL"
 
   # Pick the mode for this turn.
   if [ "$SUSPEND_CRITIC_NEXT" = 1 ]; then
@@ -268,9 +320,9 @@ while (( CYCLE < MAX_CYCLES )); do
     MODE="produce"
   fi
 
-  echo "🎭 turn $CYCLE  ·  model=$MODEL  ·  mode=$MODE"
+  echo "🎭 turn $CYCLE  ·  agent=$AGENT_LABEL  ·  mode=$MODE"
   report_status
-  run_turn "$MODE" "$MODEL" || echo "   (non-zero exit; continuing)"
+  run_turn "$MODE" "$AGENT_CMD" "$AGENT_LABEL" || echo "   (non-zero exit; continuing)"
 
   # Whiteboard may have been wiped by a Builder that addressed it — sync out.
   [ "$MODE" = "produce" ] && sync_whiteboard_out

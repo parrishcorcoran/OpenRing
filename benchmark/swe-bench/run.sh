@@ -11,9 +11,10 @@ N_TASKS="10"
 TASK_IDS=""
 MAX_CYCLES="${MAX_CYCLES:-15}"
 OUTPUT_DIR="./swebench-output"
-BASELINE=0
-BASELINE_MODEL="${BASELINE_MODEL:-${ARCHITECT_MODEL:-${MODEL_1:-anthropic/claude-sonnet-4-5}}}"
 RESUME=0
+# Each --baseline-cli takes "LABEL=CMD_TEMPLATE" where CMD_TEMPLATE has {prompt}.
+# Repeatable to compare OpenRing against multiple frontier CLIs on the same tasks.
+BASELINE_CLIS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -22,8 +23,7 @@ while [ $# -gt 0 ]; do
     --task-ids)       TASK_IDS="$2"; shift 2 ;;
     --max-cycles)     MAX_CYCLES="$2"; shift 2 ;;
     --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
-    --baseline)       BASELINE=1; shift ;;
-    --baseline-model) BASELINE_MODEL="$2"; shift 2 ;;
+    --baseline-cli)   BASELINE_CLIS+=("$2"); shift 2 ;;
     --resume)         RESUME=1; shift ;;
     -h|--help)        sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -40,15 +40,34 @@ command -v git      >/dev/null 2>&1 || { echo "❌ git not found"; exit 1; }
 
 mkdir -p "$OUTPUT_DIR/per-task"
 PREDS="$OUTPUT_DIR/predictions.jsonl"
-BASE_PREDS="$OUTPUT_DIR/baseline_predictions.jsonl"
 SUMMARY="$OUTPUT_DIR/summary.txt"
 [ "$RESUME" = 1 ] || : > "$PREDS"
-[ "$RESUME" = 1 ] || [ "$BASELINE" = 0 ] || : > "$BASE_PREDS"
+
+# Parse and validate baselines into parallel arrays: labels + command templates.
+BASELINE_LABELS=()
+BASELINE_CMDS=()
+BASELINE_PREDS=()
+BASELINE_COUNTS=()
+for spec in "${BASELINE_CLIS[@]}"; do
+  if [[ "$spec" != *"="* ]]; then
+    echo "❌ --baseline-cli must be LABEL=CMD, got: $spec" >&2; exit 2
+  fi
+  label="${spec%%=*}"
+  cmd="${spec#*=}"
+  pred_file="$OUTPUT_DIR/baseline-${label}.jsonl"
+  BASELINE_LABELS+=("$label")
+  BASELINE_CMDS+=("$cmd")
+  BASELINE_PREDS+=("$pred_file")
+  BASELINE_COUNTS+=(0)
+  [ "$RESUME" = 1 ] || : > "$pred_file"
+done
 
 START_TS=$(date +%s)
 echo "🏁 SWE-bench run: task_set=$TASK_SET  n=$N_TASKS  max_cycles=$MAX_CYCLES  output=$OUTPUT_DIR"
-echo "   predictions → $PREDS"
-[ "$BASELINE" = 1 ] && echo "   baseline    → $BASE_PREDS  (model: $BASELINE_MODEL)"
+echo "   openring    → $PREDS"
+for i in "${!BASELINE_LABELS[@]}"; do
+  echo "   baseline[${BASELINE_LABELS[$i]}] → ${BASELINE_PREDS[$i]}  (cmd: ${BASELINE_CMDS[$i]})"
+done
 
 # ---------- Fetch tasks ----------
 TASKS_JSONL="$OUTPUT_DIR/tasks.jsonl"
@@ -212,9 +231,18 @@ for t in d.get("FAIL_TO_PASS",[]): print(t)' <<< "$task_json" 2>/dev/null)
   append_prediction "$PREDS" "$INSTANCE_ID" "openring-${TASK_SET}" "$OR_PATCH"
   echo "   ✅ openring: wall=$((TASK_END - TASK_START))s  patch_bytes=$(wc -c < "$TASK_DIR/openring.patch" | tr -d ' ')"
 
-  # --- Baseline run (optional) ---
-  if [ "$BASELINE" = 1 ]; then
-    BASE_DIR="$TASK_DIR/baseline-repo"
+  # --- Baseline runs (one per --baseline-cli) ---
+  for bi in "${!BASELINE_LABELS[@]}"; do
+    blabel="${BASELINE_LABELS[$bi]}"
+    bcmd="${BASELINE_CMDS[$bi]}"
+    bpreds="${BASELINE_PREDS[$bi]}"
+
+    if [ "$RESUME" = 1 ] && already_done "$INSTANCE_ID" "$bpreds"; then
+      echo "   ($blabel: already have baseline prediction; skipping)"
+      continue
+    fi
+
+    BASE_DIR="$TASK_DIR/baseline-$blabel"
     rm -rf "$BASE_DIR"
     git clone --quiet "https://github.com/$REPO.git" "$BASE_DIR" || continue
     git -C "$BASE_DIR" checkout --quiet "$BASE_COMMIT"
@@ -222,29 +250,34 @@ for t in d.get("FAIL_TO_PASS",[]): print(t)' <<< "$task_json" 2>/dev/null)
     git -C "$BASE_DIR" config user.name  "OpenRing SWE-bench"
     ( cd "$BASE_DIR" && git apply "../test_patch.diff" && git add -A && git commit -q -m "bench: apply test_patch" ) || continue
 
+    BASE_PROMPT="Resolve the following issue by editing the code so the FAIL_TO_PASS tests pass and PASS_TO_PASS tests still pass. Do not edit tests. Do not stub. Commit your changes.
+
+Problem:
+
+$PROBLEM"
+
     BASE_START=$(date +%s)
+    BASE_QUOTED=$(printf '%q' "$BASE_PROMPT")
+    BASE_FULL_CMD="${bcmd//\{prompt\}/$BASE_QUOTED}"
     (
       cd "$BASE_DIR"
-      opencode run --model "$BASELINE_MODEL" \
-        "Resolve the following issue by editing the code so the FAIL_TO_PASS tests pass and PASS_TO_PASS tests still pass. Do not edit tests. Do not stub. Commit your changes. Problem:
-
-$PROBLEM" \
-        2>&1 | tee "$TASK_DIR/baseline.log"
-    ) || echo "   (baseline exited non-zero)"
+      eval "$BASE_FULL_CMD" 2>&1 | tee "$TASK_DIR/baseline-${blabel}.log"
+    ) || echo "   ($blabel: baseline exited non-zero)"
     BASE_END=$(date +%s)
 
-    # Baseline patch = diff from base_commit+test_patch to HEAD
     BASE_PATCH_SHA=$(git -C "$BASE_DIR" rev-list --reverse "$BASE_COMMIT"..HEAD | head -n 1)
     if [ -n "$BASE_PATCH_SHA" ]; then
       BASE_PATCH=$(git -C "$BASE_DIR" diff "$BASE_PATCH_SHA" HEAD)
     else
       BASE_PATCH=""
     fi
-    printf '%s' "$BASE_PATCH" > "$TASK_DIR/baseline.patch"
-    [ -s "$TASK_DIR/baseline.patch" ] && BASELINE_NONEMPTY=$((BASELINE_NONEMPTY + 1))
-    append_prediction "$BASE_PREDS" "$INSTANCE_ID" "baseline-$BASELINE_MODEL" "$BASE_PATCH"
-    echo "   ✅ baseline: wall=$((BASE_END - BASE_START))s  patch_bytes=$(wc -c < "$TASK_DIR/baseline.patch" | tr -d ' ')"
-  fi
+    printf '%s' "$BASE_PATCH" > "$TASK_DIR/baseline-${blabel}.patch"
+    if [ -s "$TASK_DIR/baseline-${blabel}.patch" ]; then
+      BASELINE_COUNTS[$bi]=$((${BASELINE_COUNTS[$bi]} + 1))
+    fi
+    append_prediction "$bpreds" "$INSTANCE_ID" "baseline-$blabel" "$BASE_PATCH"
+    echo "   ✅ baseline[$blabel]: wall=$((BASE_END - BASE_START))s  patch_bytes=$(wc -c < "$TASK_DIR/baseline-${blabel}.patch" | tr -d ' ')"
+  done
 
 done < "$TASKS_JSONL"
 
@@ -257,14 +290,19 @@ WALL=$((END_TS - START_TS))
   echo "  tasks_loaded:      $N_LOADED"
   echo "  tasks_attempted:   $TASKS_ATTEMPTED"
   echo "  openring_patches:  $OPENRING_NONEMPTY (non-empty)"
-  [ "$BASELINE" = 1 ] && echo "  baseline_patches:  $BASELINE_NONEMPTY (non-empty)"
+  for i in "${!BASELINE_LABELS[@]}"; do
+    echo "  baseline[${BASELINE_LABELS[$i]}]: ${BASELINE_COUNTS[$i]} (non-empty)"
+  done
   echo "  max_cycles:        $MAX_CYCLES"
   echo "  wall_time_sec:     $WALL"
   echo ""
-  echo "Predictions:   $PREDS"
-  [ "$BASELINE" = 1 ] && echo "Baseline preds: $BASE_PREDS"
+  echo "Predictions files:"
+  echo "  openring:  $PREDS"
+  for i in "${!BASELINE_LABELS[@]}"; do
+    echo "  ${BASELINE_LABELS[$i]}:  ${BASELINE_PREDS[$i]}"
+  done
   echo ""
-  echo "Next: score with the official SWE-bench evaluator."
+  echo "Next: score each predictions file with the official SWE-bench evaluator."
   echo "  pip install swebench"
   echo "  python -m swebench.harness.run_evaluation \\"
   case "$TASK_SET" in

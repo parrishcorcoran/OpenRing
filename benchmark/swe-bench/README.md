@@ -73,26 +73,56 @@ python -m swebench.harness.run_evaluation \
 
 That runs each prediction's patch against the real test suite inside a Docker container. Output: pass/fail per task, aggregated resolution rate.
 
-## Comparing OpenRing vs baseline honestly
+## The comparison that actually matters
 
-Run with `--baseline` to also generate single-agent predictions using whatever you set as `--baseline-model` (default: your `ARCHITECT_MODEL`). Then score both and compare:
+If you're running OpenRing with three frontier coding CLIs (Claude Code + Codex + Gemini CLI), the honest question isn't "does OpenRing beat opencode-with-one-model?" — it's **"does OpenRing beat each frontier CLI running alone on the same tasks?"** That's the benchmark that isolates what the orchestration adds.
+
+The runner supports repeatable `--baseline-cli LABEL=CMD_TEMPLATE` flags. Each baseline runs on every task, producing its own predictions file for head-to-head scoring:
 
 ```bash
-python -m swebench.harness.run_evaluation \
-  --predictions_path ~/openring-swebench-run-1/predictions.jsonl \
-  --run_id openring
-
-python -m swebench.harness.run_evaluation \
-  --predictions_path ~/openring-swebench-run-1/baseline_predictions.jsonl \
-  --run_id baseline
+./benchmark/swe-bench/run.sh \
+  --task-set lite \
+  --n-tasks 50 \
+  --max-cycles 15 \
+  --baseline-cli "claude=claude -p --permission-mode acceptEdits {prompt}" \
+  --baseline-cli "codex=codex exec {prompt}" \
+  --baseline-cli "gemini=gemini --yolo {prompt}"
 ```
 
-What the research predicts (from [RESEARCH.md](../../RESEARCH.md)): on a task class with verifiable ground truth and long horizons like SWE-bench, multi-agent with a reviewer typically hits ~7% absolute higher resolution rate than single-agent with the same base model. OpenRing's rotation + forced critique should sit in that range, maybe better if the specialty subagents and multi-round critique pay off.
+Output:
+
+```
+~/swebench-output/
+├── predictions.jsonl          # OpenRing (all 3 rotating)
+├── baseline-claude.jsonl      # Claude Code alone
+├── baseline-codex.jsonl       # Codex alone
+├── baseline-gemini.jsonl      # Gemini CLI alone
+└── per-task/<instance_id>/    # all logs + patches per task
+```
+
+Then score each file:
+
+```bash
+for f in predictions baseline-claude baseline-codex baseline-gemini; do
+  python -m swebench.harness.run_evaluation \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --predictions_path ~/swebench-output/${f}.jsonl \
+    --run_id ${f}-$(date +%Y%m%d)
+done
+```
+
+What you're looking for in the results:
+
+- **OpenRing > every individual CLI** — orchestration is genuinely adding value.
+- **OpenRing ≈ best individual CLI** — orchestration is matching the strongest member, so you're paying ~3× wall time for parity. Worth it if reliability matters, not if raw pass rate is the only metric.
+- **OpenRing < best individual CLI** — rotation or critic prompts are hurting more than helping. Check same-family collisions, check MAX_CYCLES is high enough, consider whether the specialty subagents are misfiring.
+
+Research expectation (from [RESEARCH.md](../../RESEARCH.md)): on SWE-bench Verified, a well-structured multi-agent with a different-model reviewer beats single-agent by ~7% absolute at the same base model. With three *different* frontier CLIs in rotation, the structural advantage should be at least that much, plus whatever each CLI's native specialty contributes. On Lite, signal-to-noise is tighter; treat Lite as a directional check and Verified as the real measurement.
 
 If you get worse-than-baseline numbers, the most likely causes are (in order):
-1. **Same-family models in rotation** — check the startup warning wasn't suppressed.
-2. **`MAX_CYCLES` too low** — each task needs enough cycles to see a critic round after the builder. Try 15-20.
-3. **Constitution is vague** — the task-template Constitution is fine, but if you modified it, make sure rules are concrete.
+1. **Same-family slots** — check `AGENT_FAMILY_N` values and the startup warning.
+2. **`MAX_CYCLES` too low** — each task needs enough cycles for at least one critic round. Try 15-20.
+3. **The baseline CLIs have very different default behaviors around commits** — some commit aggressively, some wait for confirmation. If a CLI doesn't commit its fix, the patch extraction will be empty. Check the per-task logs.
 
 ## Flags
 
@@ -102,8 +132,8 @@ If you get worse-than-baseline numbers, the most likely causes are (in order):
 --task-ids        comma-separated instance_ids (overrides --n-tasks)
 --max-cycles      passed through to openring.sh (default: 15)
 --output-dir      where to write everything    (default: ./swebench-output)
---baseline        also generate single-agent predictions
---baseline-model  which model to use for baseline (default: $ARCHITECT_MODEL)
+--baseline-cli    LABEL=CMD_TEMPLATE (repeatable); runs single-CLI baseline
+                  on every task. CMD_TEMPLATE uses {prompt}.
 --resume          skip tasks with existing predictions in output-dir
 ```
 
